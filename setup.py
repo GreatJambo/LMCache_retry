@@ -78,9 +78,10 @@ def cuda_extension() -> tuple[list, dict]:
             "lmcache.c_ops",
             sources=cuda_sources,
             extra_compile_args={
-                "cxx": ["-D_GLIBCXX_USE_CXX11_ABI=0"],
+                "cxx": ["-D_GLIBCXX_USE_CXX11_ABI=0", "-fPIC", "-std=c++17"],
                 "nvcc": ["-D_GLIBCXX_USE_CXX11_ABI=0"],
             },
+            extra_link_args=["-D_GLIBCXX_USE_CXX11_ABI=0"],
         ),
     ]
     cmdclass = {"build_ext": cpp_extension.BuildExtension}

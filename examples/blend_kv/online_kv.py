@@ -24,7 +24,7 @@ openai_api_key = "EMPTY"
 openai_api_base = f"http://localhost:{port}/v1"
 
 context_files = ["chunk1.txt", "chunk2.txt"]
-tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-Instruct-v0.2")
+tokenizer = AutoTokenizer.from_pretrained("codellama/CodeLlama-7b-Instruct-hf")
 precompute_kv = OnlineKVPreCompute(openai_api_key, openai_api_base, tokenizer)
 print("-------------- Pre-computing KV cache for chunks -------------------")
 context_chunks = []

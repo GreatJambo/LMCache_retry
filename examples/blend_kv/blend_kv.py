@@ -22,7 +22,7 @@ sys_prompt = "Here's a document from the user: "
 question = "Question: What does this document mainly talks about? Answer: "
 
 llm = LLM(
-    model="mistralai/Mistral-7B-Instruct-v0.2",
+    model="codellama/CodeLlama-7b-Instruct-hf",
     gpu_memory_utilization=0.7,
     tensor_parallel_size=1,
 )

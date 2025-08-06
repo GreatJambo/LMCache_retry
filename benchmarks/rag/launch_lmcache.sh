@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-MODEL_NAME="mistralai/Mistral-7B-Instruct-v0.2"
+MODEL_NAME="codellama/CodeLlama-7b-Instruct-hf"
 DATASET_PATH=~/CacheBlend/inputs/musique_s.json
 PROMPT_BUILD_METHOD=QA
 KV_STORAGE_SIZE=30GB

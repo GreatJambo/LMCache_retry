@@ -15,7 +15,10 @@ from lmcache.storage_backend.serde.cachegen_basics import (
 )
 from lmcache.storage_backend.serde.serde import Deserializer
 from lmcache.utils import _lmcache_nvtx_annotate
-import lmcache.c_ops as lmc_ops
+try:
+    import lmcache.c_ops as lmc_ops
+except ImportError:
+    lmc_ops = None
 import lmcache.storage_backend.serde.cachegen_basics as CGBasics
 
 logger = init_logger(__name__)
@@ -69,7 +72,10 @@ def decode_chunk(
         .cumsum(0)
         .reshape(data_chunk.bytestream_lengths.shape)
     )
-    lmc_ops.decode_fast_prefsum(cdf, bytes_tensor, length_prefsum, target_buffer)
+    if lmc_ops is not None:
+        lmc_ops.decode_fast_prefsum(cdf, bytes_tensor, length_prefsum, target_buffer)
+    else:
+        raise RuntimeError("C++ extensions not available, cannot perform decode_fast_prefsum operation")
 
 
 @_lmcache_nvtx_annotate
