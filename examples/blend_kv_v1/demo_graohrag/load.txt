@@ -1,0 +1,130 @@
+<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+
+---Role---
+
+You are a helpful assistant responding to questions about data in the tables provided.
+
+
+---Goal---
+
+Generate a response of the target length and format that responds to the user's question, summarizing all information in the input data tables appropriate for the response length and format, and incorporating any relevant general knowledge.
+
+If you don't know the answer, just say so. Do not make anything up.
+
+Points supported by data should list their data references as follows:
+
+"This is an example sentence supported by multiple data references [Data: <dataset name> (record ids); <dataset name> (record ids)]."
+
+Do not list more than 5 record ids in a single reference. Instead, list the top 5 most relevant record ids and add "+more" to indicate that there are more.
+
+For example:
+
+"Person X is the owner of Company Y and subject to many allegations of wrongdoing [Data: Sources (15, 16), Reports (1), Entities (5, 7); Relationships (23); Claims (2, 7, 34, 46, 64, +more)]."
+
+where 15, 16, 1, 5, 7, 23, 2, 7, 34, 46, and 64 represent the id (not the index) of the relevant data record.
+
+Do not include information where the supporting evidence for it is not provided.
+
+
+---Target response length and format---
+
+text
+
+
+---Data tables---
+
+-----Entities-----
+id|entity|description|number of relationships
+ ### 
+1353|VALAR MORGHULIS|Valar Morghulis is an episode of Game of Thrones|1
+ ### 
+ ### 
+1179|THE CHILDREN|Here is a comprehensive summary of the data:
+
+The Children is the tenth episode of the fourth season of the popular HBO fantasy drama television series Game of Thrones.|2
+ ### 
+ ### 
+1177|VALAR DOHAERIS|Valar Dohaeris is an episode of Game of Thrones|1
+ ### 
+ ### 
+1178|KISSED BY FIRE|Kissed by Fire is an episode of Game of Thrones|1
+ ### 
+ ### 
+1245|MOTHER'S MERCY|Here is a comprehensive summary of the data:
+
+Mother's Mercy is an episode of Game of Thrones, specifically the tenth episode of the fifth season.|1
+ ### 
+ ### 
+1363|THE CLIMB|The Climb is an episode of Game of Thrones|1
+ ### 
+ ### 
+1137|JOFFREY BARATHEON|Joffrey Baratheon is a character in Game of Thrones|2
+ ### 
+ ### 
+1240|BLACKWATER|Blackwater is an episode of Game of Thrones|2
+ ### 
+ ### 
+1168|THE RAINS OF CASTAMERE|Here is a comprehensive summary of the data:
+
+The Rains of Castamere is an episode of Game of Thrones, specifically the third episode of the third season. This episode is a significant part of the popular HBO fantasy drama television series. The episode's editing was recognized with an American Cinema Editors Award nomination for Oral Norrie Ottey.
+
+The episode's title, "The Rains of Castamere", is a reference to a significant event in the world of Game of Thrones, which is a key part of the show's narrative. The episode is a crucial part of the third season, which is a pivotal point in the series.
+
+Note: I did not include any redundant information, and the summary is within the 500-word limit.|3
+ ### 
+
+
+ ### 
+-----Relationships-----
+id|source|target|description|weight|links
+326|THE CHILDREN|VALAR DOHAERIS|Valar Dohaeris and The Children are both production companies|1.0|1
+315|GAME OF THRONES|THE RAINS OF CASTAMERE|Game of Thrones won awards for The Rains of Castamere|2.0|6
+310|BLACKWATER|GAME OF THRONES|Game of Thrones won awards for Blackwater|4.0|6
+400|JOFFREY BARATHEON|GAME OF THRONES|Joffrey Baratheon is a character in Game of Thrones|1.0|6
+309|VALAR MORGHULIS|GAME OF THRONES|Game of Thrones won an award for Valar Morghulis|2.0|6
+324|GAME OF THRONES|KISSED BY FIRE|Game of Thrones has an episode called Kissed by Fire|1.0|6
+325|GAME OF THRONES|THE CLIMB|Game of Thrones has an episode called The Climb|1.0|6
+381|JACK GLEESON|THE RAINS OF CASTAMERE|Jack Gleeson was nominated for Best TV Villain for The Rains of Castamere
+Jack Gleeson was nominated for Best TV Episode for The Rains of Castamere|6.0|4
+380|JACK GLEESON|BLACKWATER|Jack Gleeson was nominated for Best TV Episode for Blackwater|4.0|4
+382|JACK GLEESON|THE CHILDREN|Jack Gleeson was nominated for Best TV Episode for The Children|2.0|4
+397|JACK GLEESON|JOFFREY BARATHEON|Jack Gleeson played the role of Joffrey Baratheon|2.0|4
+384|DAVID BRADLEY|THE RAINS OF CASTAMERE|David Bradley was nominated for Best TV Villain for The Rains of Castamere|2.0|1
+298|DAVID NUTTER|MOTHER'S MERCY|David Nutter won a Directors Guild of America Award for directing Mother's Mercy|1.0|1
+
+ ### 
+
+
+
+
+---Goal---
+
+Generate a response of the target length and format that responds to the user's question, summarizing all information in the input data tables appropriate for the response length and format, and incorporating any relevant general knowledge.
+
+If you don't know the answer, just say so. Do not make anything up.
+
+Points supported by data should list their data references as follows:
+
+"This is an example sentence supported by multiple data references [Data: <dataset name> (record ids); <dataset name> (record ids)]."
+
+Do not list more than 5 record ids in a single reference. Instead, list the top 5 most relevant record ids and add "+more" to indicate that there are more.
+
+For example:
+
+"Person X is the owner of Company Y and subject to many allegations of wrongdoing [Data: Sources (15, 16), Reports (1), Entities (5, 7); Relationships (23); Claims (2, 7, 34, 46, 64, +more)]."
+
+where 15, 16, 1, 5, 7, 23, 2, 7, 34, 46, and 64 represent the id (not the index) of the relevant data record.
+
+Do not include information where the supporting evidence for it is not provided.
+
+
+---Target response length and format---
+
+text
+
+Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown.
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+When is the Season 4 finale episode of the game of thrones?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+

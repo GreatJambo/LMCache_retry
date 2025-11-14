@@ -29,7 +29,6 @@ def setup_environment_variables(
 
     # Blending related config
     os.environ["LMCACHE_ENABLE_BLENDING"] = "True"
-    os.environ["LMCACHE_LOG_LEVEL"] = "DEBUG"
     os.environ["LMCACHE_BLEND_SPECIAL_STR"] = blend_special_str
     os.environ["LMCACHE_USE_LAYERWISE"] = "True"
     os.environ["LMCACHE_BLEND_CHECK_LAYERS"] = "1"
@@ -60,22 +59,38 @@ def setup_environment_variables(
 
 
 @contextlib.contextmanager
-def build_llm_with_lmcache(lmcache_connector: str, model: str):
+def build_llm_with_lmcache(
+    lmcache_connector: str,
+    model: str,
+    *,
+    max_model_len: int | None = None,
+    max_num_batched_tokens: int | None = None,
+    tokenizer_mode: str | None = None,
+):
     ktc = KVTransferConfig(
         kv_connector=lmcache_connector,
         kv_role="kv_both",
     )
 
+    # Build EngineArgs then drop None fields to avoid overriding model defaults
     llm_args = EngineArgs(
         model=model,
         kv_transfer_config=ktc,
-        max_model_len=32648,
-        gpu_memory_utilization=0.7,
+        max_model_len=max_model_len,  # keep None to use model's derived max
+        gpu_memory_utilization=0.8,
         enable_prefix_caching=False,
         enforce_eager=True,
+        tokenizer_mode=tokenizer_mode or "auto",
+        max_num_batched_tokens=max_num_batched_tokens,
     )
 
-    llm = LLM(**asdict(llm_args))
+    args_dict = asdict(llm_args)
+    # Remove keys with None to let vLLM pick defaults safely
+    for k in ["max_model_len", "max_num_batched_tokens", "tokenizer_mode"]:
+        if args_dict.get(k, "__missing__") is None:
+            args_dict.pop(k, None)
+
+    llm = LLM(**args_dict)
     try:
         yield llm
     finally:
@@ -124,6 +139,47 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--tokenizer-mode",
+        type=str,
+        default="auto",
+        help=(
+            "vLLM tokenizer mode (e.g., 'auto' (default) or 'mistral' for "
+            "models that prefer custom tokenizers)."
+        ),
+    )
+
+    parser.add_argument(
+        "--max-num-batched-tokens",
+        type=int,
+        default=None,
+        help=(
+            "vLLM scheduler max_num_batched_tokens. Set higher than the prompt "
+            "length (e.g., 20000) to avoid chunked prefill and enable clear "
+            "LMCache hits."
+        ),
+    )
+
+    parser.add_argument(
+        "--max-model-len",
+        type=int,
+        default=None,
+        help=(
+            "Override model's max context length. Leave unset to use the model's "
+            "derived limit and avoid safety issues."
+        ),
+    )
+
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=500,
+        help=(
+            "Repeat count for the synthetic chunks (default: 500). Lower for small-ctx models "
+            "(e.g., 80 for 2K context)."
+        ),
+    )
+
+    parser.add_argument(
         "--enable-sparse",
         action="store_true",
     )
@@ -143,18 +199,20 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(model)
 
-    with build_llm_with_lmcache(lmcache_connector, model) as llm:
+    with build_llm_with_lmcache(
+        lmcache_connector,
+        model,
+        max_model_len=args.max_model_len,
+        max_num_batched_tokens=args.max_num_batched_tokens,
+        tokenizer_mode=args.tokenizer_mode,
+    ) as llm:
         # Define the shared prompt and specific prompts
-        warmup_prompt = tokenizer.encode("Nice to meet you" * 500)[1:]
-        sys_prompt = [1, 733, 16289, 28793] + tokenizer.encode(
-            "You are a very helpful assistant. "
-            "Please answer the question with instructions."
-        )
-        chunk1_prompt = tokenizer.encode("Hello, how are you?" * 500)[1:]
-        chunk2_prompt = tokenizer.encode("Hello, what's up?" * 500)[1:]
-        chunk3_prompt = tokenizer.encode("Hi, what are you up to?" * 500)[1:]
+        warmup_prompt = tokenizer.encode("Nice to meet you" * args.repeat)[1:]
+        sys_prompt = tokenizer.encode("You are a very helpful assistant.")
+        chunk1_prompt = tokenizer.encode("Hello, how are you?" * args.repeat)[1:]
+        chunk2_prompt = tokenizer.encode("Hello, what's up?" * args.repeat)[1:]
+        chunk3_prompt = tokenizer.encode("Hi, what are you up to?" * args.repeat)[1:]
         blend_special_str = tokenizer.encode(os.getenv("LMCACHE_BLEND_SPECIAL_STR"))[1:]
-
         first_prompt = (
             sys_prompt
             + blend_special_str
@@ -165,7 +223,6 @@ def main():
             + chunk3_prompt
             + blend_special_str
             + tokenizer.encode("Hello, my name is")[1:]
-            + [733, 28748, 16289, 28793]
         )
 
         second_prompt = (
@@ -178,20 +235,18 @@ def main():
             + chunk3_prompt
             + blend_special_str
             + tokenizer.encode("Hello, how are you?")[1:]
-            + [733, 28748, 16289, 28793]
         )
 
         third_prompt = (
             sys_prompt
             + blend_special_str
-            + chunk2_prompt
+            + chunk3_prompt
             + blend_special_str
             + chunk1_prompt
             + blend_special_str
-            + chunk3_prompt
+            + chunk2_prompt
             + blend_special_str
             + tokenizer.encode("Hello, what's up?")[1:]
-            + [733, 28748, 16289, 28793]
         )
 
         sampling_params = SamplingParams(temperature=0, top_p=0.95, max_tokens=1)

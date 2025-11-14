@@ -1,0 +1,8 @@
+{
+  "chunks": {
+    "chunk1": "Hello, how are you? This is the first chunk.",
+    "chunk2": "Hello, what's up? This is the second chunk.",
+    "chunk3": "Hi, what are you up to? This is the third chunk."
+  }
+}
+
