@@ -6,6 +6,7 @@ import abc
 # Third Party
 from transformers import AutoTokenizer
 import torch
+import os
 
 # First Party
 from lmcache.config import LMCacheEngineMetadata
@@ -139,6 +140,7 @@ class TokenDatabase(metaclass=abc.ABCMeta):
         # Ignore extra keys for now
         # Extra keys are for multi-modal inputs and
         # request specific metadata (e.g., LoRA ID).
+        print(f"prefix_hash: ******************************* {prefix_hash}")
         return self.hash_func((prefix_hash, tokens_tuple, extra_keys))
 
 
@@ -311,6 +313,7 @@ class SegmentTokenDatabase(TokenDatabase):
         # to use `1:` (whether there's a special starting token
         # in the beginning)
         self.sep_tokens = self.tokenizer.encode(config.blend_special_str)[1:]
+        print(f"sep_tokens: ******************************* {self.sep_tokens}")
         self.sep_tokens = torch.tensor(self.sep_tokens, device="cpu")
         self.sep_len = len(self.sep_tokens)
 
@@ -396,16 +399,35 @@ class SegmentTokenDatabase(TokenDatabase):
                     start_idx += self.sep_len
                     end_idx += self.sep_len
                 if start_idx >= num_falses:
+                    # Compute the segment hash once to stabilize logging and key creation
+                    seg_hash = self._hash_tokens(token_chunk)
+
+                    # Optional segment-level debug to help diagnose mismatches
+                    # Enable via: LMCACHE_DEBUG_SEGMENTS=1
+                    if os.getenv("LMCACHE_DEBUG_SEGMENTS", "").lower() in ("1", "true", "on", "yes"):
+                        try:
+                            seg_text = self.tokenizer.decode(token_chunk.tolist())
+                            if len(seg_text) > 160:
+                                seg_text = seg_text[:157] + "..."
+                        except Exception:
+                            seg_text = f"<len={len(token_chunk)} tokens>"
+                        logger.debug(
+                            "[seg] [%d,%d) len=%d hash=%016x text=%r",
+                            start_idx,
+                            end_idx,
+                            token_chunk_len,
+                            seg_hash & ((1 << 64) - 1),
+                            seg_text,
+                        )
+
                     if make_key:
                         yield (
                             start_idx,
                             end_idx,
-                            self._make_key_by_hash(
-                                self._hash_tokens(token_chunk), request_configs
-                            ),
+                            self._make_key_by_hash(seg_hash, request_configs),
                         )
                     else:
-                        yield start_idx, end_idx, self._hash_tokens(token_chunk)
+                        yield start_idx, end_idx, seg_hash
                 start_idx = end_idx
         elif hashes is not None:
             assert offsets is not None, (

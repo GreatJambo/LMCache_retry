@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Standard
 from collections import defaultdict
+import os
 from typing import (
     Any,
     Callable,
@@ -14,7 +15,9 @@ from typing import (
 import asyncio
 import gc
 import multiprocessing
+import os
 import time
+from urllib.parse import urlparse
 
 # Third Party
 import torch
@@ -50,6 +53,7 @@ from lmcache.v1.token_database import (
     SegmentTokenDatabase,
     TokenDatabase,
 )
+from lmcache.v1.uuid_index import UUIDIndex
 
 logger = init_logger(__name__)
 
@@ -153,6 +157,9 @@ class LMCacheEngine:
 
         self.post_inited = False
 
+        # Lazy-initialized UUID index for persistent UUID -> chunk mapping
+        self._uuid_index: Optional[UUIDIndex] = None
+
         # Whether to force store to wait if no CPU buffer is available
         self.force_store_wait = config.extra_config and config.extra_config.get(
             "force_store_wait", False
@@ -170,6 +177,42 @@ class LMCacheEngine:
             logger.info("Post-initializing LMCacheEngine")
             self.gpu_connector.initialize_kvcaches_ptr(**kwargs)
             self.post_inited = True
+
+    def _get_local_disk_dir(self) -> Optional[str]:
+        local_disk = self.config.local_disk
+        if local_disk is None or local_disk == "":
+            return None
+        try:
+            parsed = urlparse(local_disk)
+            if parsed.scheme == "file":
+                # Preserve netloc as part of the path when present to avoid
+                # turning into an unintended absolute root path like "/name".
+                # Examples:
+                #   file:///abs/path -> netloc="", path="/abs/path" -> "/abs/path"
+                #   file://examples/uuid_kv/local_disk/ -> netloc="examples",
+                #       path="/uuid_kv/local_disk/" -> "examples/uuid_kv/local_disk/"
+                netloc = parsed.netloc
+                path = parsed.path or ""
+                if netloc:
+                    # Join netloc and stripped path to form a relative/path-like dir
+                    # instead of "/netloc/..." which may require root permission.
+                    return os.path.join(netloc, path.lstrip("/"))
+                return path
+        except Exception:
+            pass
+        # Fallback: treat as a plain path
+        return local_disk
+
+    def _get_uuid_index(self) -> UUIDIndex:
+        if self._uuid_index is None:
+            disk_dir = self._get_local_disk_dir()
+            assert (
+                disk_dir is not None
+            ), "LocalDiskBackend must be configured to persist UUID mappings"
+            os.makedirs(disk_dir, exist_ok=True)
+            db_path = os.path.join(disk_dir, "lmcache_uuid_index.sqlite")
+            self._uuid_index = UUIDIndex(db_path)
+        return self._uuid_index
 
     @_lmcache_nvtx_annotate
     @torch.inference_mode()
@@ -352,6 +395,10 @@ class LMCacheEngine:
             keys_multi_layer = key.split_layers(self.num_layers)
             # Only check the first layer
             if self.storage_manager.contains(keys_multi_layer[0]):
+                logger.debug(
+                    f"Segment [{start}, {end}) already exists in cache, skipping. "
+                    f"Key (layer 0): {keys_multi_layer[0]}"
+                )
                 continue
 
             # Allocate the memory object
@@ -373,6 +420,10 @@ class LMCacheEngine:
                 )
                 break
 
+            logger.debug(
+                f"Storing segment [{start}, {end}) ({num_tokens} tokens). "
+                f"Key (layer 0): {keys_multi_layer[0]}"
+            )
             starts.append(start)
             ends.append(end)
             keys.append(keys_multi_layer)
@@ -576,8 +627,65 @@ class LMCacheEngine:
 
             # NOTE: Only check the first layer
             if not self.storage_manager.contains(keys_multi_layer[0]):
+                if os.getenv("LMCACHE_DEBUG_SEGMENTS", "").lower() in ("1", "true", "on", "yes"):
+                    try:
+                        # best-effort decode for diagnostics only
+                        if isinstance(tokens, list):
+                            tok_slice = tokens[start:end]
+                        else:
+                            tok_slice = tokens[start:end].tolist()
+                        seg_text = self.token_database.tokenizer.decode(tok_slice)
+                        if len(seg_text) > 160:
+                            seg_text = seg_text[:157] + "..."
+                        logger.info(
+                            "[miss] [%d,%d) key=%s text=%r",
+                            start,
+                            end,
+                            keys_multi_layer[0].to_string(),
+                            seg_text,
+                        )
+                    except Exception:
+                        logger.info(
+                            "[miss] [%d,%d) key=%s",
+                            start,
+                            end,
+                            keys_multi_layer[0].to_string(),
+                        )
+                else:
+                    logger.debug(
+                        f"Retrieve: Segment [{start}, {end}) not found in cache, stopping retrieval. "
+                        f"Key (layer 0): {keys_multi_layer[0]}"
+                    )
                 break
 
+            if os.getenv("LMCACHE_DEBUG_SEGMENTS", "").lower() in ("1", "true", "on", "yes"):
+                try:
+                    if isinstance(tokens, list):
+                        tok_slice = tokens[start:end]
+                    else:
+                        tok_slice = tokens[start:end].tolist()
+                    seg_text = self.token_database.tokenizer.decode(tok_slice)
+                    if len(seg_text) > 160:
+                        seg_text = seg_text[:157] + "..."
+                    logger.info(
+                        "[hit ] [%d,%d) key=%s text=%r",
+                        start,
+                        end,
+                        keys_multi_layer[0].to_string(),
+                        seg_text,
+                    )
+                except Exception:
+                    logger.info(
+                        "[hit ] [%d,%d) key=%s",
+                        start,
+                        end,
+                        keys_multi_layer[0].to_string(),
+                    )
+            else:
+                logger.debug(
+                    f"Retrieve: Segment [{start}, {end}) found in cache. "
+                    f"Key (layer 0): {keys_multi_layer[0]}"
+                )
             starts.append(start)
             ends.append(end)
             keys.append(keys_multi_layer)
@@ -739,6 +847,176 @@ class LMCacheEngine:
             # vllm lookup sets pin to True
             if pin:
                 self.storage_manager.touch_cache()
+
+    @_lmcache_nvtx_annotate
+    def register_uuid(
+        self,
+        uuid: str,
+        *,
+        tokens: Optional[Union[torch.Tensor, List[int]]] = None,
+        hashes: Optional[List[int]] = None,
+        offsets: Optional[List[int]] = None,
+        request_configs: Optional[dict] = None,
+    ) -> int:
+        """Register a UUID to map to an ordered list of chunk hashes and offsets.
+
+        The KV data itself must already be stored by normal LMCache store paths.
+
+        Returns the total number of tokens recorded for the UUID.
+        """
+        assert tokens is not None or hashes is not None, (
+            "Either 'tokens' or 'hashes' must be provided."
+        )
+
+        chunk_hashes: list[int] = []
+        chunk_offsets: list[int] = []
+
+        for start, end, key_or_hash in self.token_database.process_tokens(
+            tokens=tokens,
+            hashes=hashes,
+            offsets=offsets,
+            make_key=False,
+            request_configs=request_configs,
+        ):
+            assert isinstance(key_or_hash, int)
+            chunk_hashes.append(int(key_or_hash))
+            chunk_offsets.append(int(end - start))
+
+        total_tokens = sum(chunk_offsets)
+
+        idx = self._get_uuid_index()
+        idx.upsert(
+            uuid,
+            model_name=self.metadata.model_name,
+            fmt=self.metadata.fmt,
+            world_size=self.metadata.world_size,
+            worker_id=self.metadata.worker_id,
+            total_tokens=total_tokens,
+            request_configs=request_configs,
+            chunk_hashes=chunk_hashes,
+            offsets=chunk_offsets,
+        )
+        return total_tokens
+
+    @_lmcache_nvtx_annotate
+    @torch.inference_mode()
+    def retrieve_by_uuid(self, uuid: str, **kwargs) -> torch.Tensor:
+        """Retrieve KV caches by a previously registered UUID.
+
+        This loads the corresponding KV chunks to GPU without requiring tokens.
+
+        Returns a boolean mask of length total_tokens indicating the retrieved prefix.
+        """
+        t = time.perf_counter()
+        idx = self._get_uuid_index()
+        resolved = idx.resolve(uuid)
+        if resolved is None:
+            raise ValueError(f"UUID not found: {uuid}")
+
+        meta, chunk_hashes, offsets = resolved
+
+        # Safety checks: ensure exact metadata match to avoid cross-model misuse
+        if (
+            meta["fmt"] != self.metadata.fmt
+            or meta["model_name"] != self.metadata.model_name
+            or int(meta["world_size"]) != int(self.metadata.world_size)
+            or int(meta["worker_id"]) != int(self.metadata.worker_id)
+        ):
+            raise ValueError(
+                "UUID metadata mismatch with current engine (fmt/model/world_size/worker_id)"
+            )
+
+        total_tokens = int(meta["total_tokens"]) if "total_tokens" in meta else sum(offsets)
+        request_configs: Optional[dict] = meta.get("request_configs")
+
+        ret_mask = torch.zeros(total_tokens, dtype=torch.bool, device="cpu")
+
+        # Build keys in order
+        keys: list[CacheEngineKey] = []
+        starts: list[int] = []
+        ends: list[int] = []
+        cursor = 0
+        for chunk_hash, offset in zip(chunk_hashes, offsets, strict=False):
+            starts.append(cursor)
+            cursor += int(offset)
+            ends.append(cursor)
+            keys.append(
+                CacheEngineKey(
+                    self.metadata.fmt,
+                    self.metadata.model_name,
+                    self.metadata.world_size,
+                    self.metadata.worker_id,
+                    int(chunk_hash),
+                    request_configs,
+                )
+            )
+
+        # Group by location for batched retrieval
+        block_mapping: dict[str, list[tuple[CacheEngineKey, int, int]]] = defaultdict(list)
+        last_failed_block_start: Optional[int] = None
+        for key, start, end in zip(keys, starts, ends, strict=False):
+            location = self.storage_manager.contains(key)
+            if location is None:
+                last_failed_block_start = start if last_failed_block_start is None else max(last_failed_block_start, start)
+                break
+            ret_mask[start:end] = True
+            block_mapping[location].append((key, start, end))
+
+        # Retrieve memory objects from each location
+        retrieved_chunks: list[tuple[CacheEngineKey, MemoryObj, int, int]] = []
+        tot_kv_size = 0
+        for location, blocks in block_mapping.items():
+            loc_keys = [k for k, _, _ in blocks]
+            mem_objs = self.storage_manager.batched_get(loc_keys, location=location)
+            assert mem_objs is not None, "Failed to get memory objects from storage backend"
+            for (key, start, end), mem_obj in zip(blocks, mem_objs, strict=False):
+                if mem_obj is None:
+                    if last_failed_block_start is None or last_failed_block_start < start:
+                        last_failed_block_start = start
+                    break
+                retrieved_chunks.append((key, mem_obj, start, end))
+                tot_kv_size += mem_obj.get_size()
+
+        if last_failed_block_start is not None:
+            ret_mask[last_failed_block_start:] = False
+            retrieved_chunks = [
+                (key, mem_obj, start, end)
+                for key, mem_obj, start, end in retrieved_chunks
+                if end <= last_failed_block_start
+            ]
+
+        # Sort by start to restore order before GPU load
+        retrieved_chunks.sort(key=lambda x: x[2])
+
+        # Broadcast to other ranks if only first rank saves
+        if self.save_only_first_rank:
+            with torch.cuda.stream(self.broadcast_stream):
+                self._broadcast_or_receive_memory_objs(retrieved_chunks, ret_mask)
+            if not hasattr(self.gpu_connector, "load_stream"):
+                self.broadcast_stream.synchronize()
+
+        if len(retrieved_chunks) > 0:
+            _, mem_objs, st_list, ed_list = zip(*retrieved_chunks, strict=False)
+            self.gpu_connector.batched_to_gpu(list(mem_objs), list(st_list), list(ed_list), **kwargs)
+
+        for _, mem_obj, _, _ in retrieved_chunks:
+            mem_obj.ref_count_down()
+
+        elapsed = time.perf_counter() - t
+        retrieved_tokens = int(torch.sum(ret_mask).item())
+        logger.info(
+            "retrieve_by_uuid: Retrieved %d of %d tokens, size: %.4f GB, cost %.4f ms",
+            retrieved_tokens,
+            total_tokens,
+            tot_kv_size / 1024**3,
+            elapsed * 1000,
+        )
+        return ret_mask
+
+    @_lmcache_nvtx_annotate
+    def unregister_uuid(self, uuid: str) -> None:
+        idx = self._get_uuid_index()
+        idx.delete(uuid)
 
     @_lmcache_nvtx_annotate
     def move(
@@ -1022,6 +1300,12 @@ class LMCacheEngine:
 
         if self.lmcache_worker is not None:
             self.lmcache_worker.close()
+
+        if self._uuid_index is not None:
+            try:
+                self._uuid_index.close()
+            except Exception:
+                pass
 
         self.storage_manager.close()
 

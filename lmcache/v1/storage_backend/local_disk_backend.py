@@ -6,6 +6,7 @@ import asyncio
 import os
 import threading
 import time
+from urllib.parse import urlparse
 
 # Third Party
 import torch
@@ -117,6 +118,17 @@ class LocalDiskBackend(StorageBackendInterface):
 
         assert config.local_disk is not None
         self.path: str = config.local_disk
+        # Normalize file:// URIs to filesystem paths for robustness
+        try:
+            parsed = urlparse(self.path)
+            if parsed.scheme == "file":
+                netloc = parsed.netloc
+                path = parsed.path or ""
+                self.path = (
+                    os.path.join(netloc, path.lstrip("/")) if netloc else path
+                )
+        except Exception:
+            pass
         if not os.path.exists(self.path):
             os.makedirs(self.path)
             logger.info(f"Created local disk cache directory: {self.path}")

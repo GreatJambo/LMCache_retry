@@ -653,6 +653,11 @@ def _update_config_from_env(self):
                 logger.warning(f"Failed to parse {get_env_name(name)}: {e}")
                 # Keep existing value if conversion fails
 
+    # Re-run validation to apply any dependent adjustments (e.g.,
+    # automatically set save_unfull_chunk=False when async loading or
+    # layerwise mode is enabled), since env overrides happened after
+    # __post_init__.
+    self.validate()
     return self
 
 
