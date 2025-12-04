@@ -124,9 +124,7 @@ class LocalDiskBackend(StorageBackendInterface):
             if parsed.scheme == "file":
                 netloc = parsed.netloc
                 path = parsed.path or ""
-                self.path = (
-                    os.path.join(netloc, path.lstrip("/")) if netloc else path
-                )
+                self.path = os.path.join(netloc, path.lstrip("/")) if netloc else path
         except Exception:
             pass
         if not os.path.exists(self.path):
@@ -239,7 +237,11 @@ class LocalDiskBackend(StorageBackendInterface):
         # )
         # res.result()
 
-        os.remove(path)
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            # File already deleted - eviction goal achieved
+            pass
 
         if force:
             self.cache_policy.update_on_force_evict(key)

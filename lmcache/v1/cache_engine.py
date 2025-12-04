@@ -206,9 +206,9 @@ class LMCacheEngine:
     def _get_uuid_index(self) -> UUIDIndex:
         if self._uuid_index is None:
             disk_dir = self._get_local_disk_dir()
-            assert (
-                disk_dir is not None
-            ), "LocalDiskBackend must be configured to persist UUID mappings"
+            assert disk_dir is not None, (
+                "LocalDiskBackend must be configured to persist UUID mappings"
+            )
             os.makedirs(disk_dir, exist_ok=True)
             db_path = os.path.join(disk_dir, "lmcache_uuid_index.sqlite")
             self._uuid_index = UUIDIndex(db_path)
@@ -500,6 +500,7 @@ class LMCacheEngine:
             num_required_tokens = torch.sum(mask).item()
         else:
             num_required_tokens = len(tokens)
+
         monitor_req_id = self.stats_monitor.on_retrieve_request(num_required_tokens)
 
         ret_mask = torch.zeros(len(tokens), dtype=torch.bool, device="cpu")
@@ -600,34 +601,33 @@ class LMCacheEngine:
             last iteration, it moves the memory objects of the last layer to
             the GPU.
         """
-
         if mask is not None:
             num_required_tokens = torch.sum(mask).item()
         else:
             num_required_tokens = len(tokens)
+
         monitor_req_id = self.stats_monitor.on_retrieve_request(num_required_tokens)
 
         ret_mask = torch.zeros(len(tokens), dtype=torch.bool, device="cpu")
-
         starts = []
         ends = []
         keys = []
 
-        request_configs = kwargs.get("request_configs")
-        if request_configs is not None and len(request_configs) != 0:
-            assert isinstance(request_configs, dict)
+        # TODO(Jiayi): Remove the following for loop with batched operations
         for start, end, key in self.token_database.process_tokens(
             tokens=tokens,
             mask=mask,
-            request_configs=request_configs,
         ):
-            assert isinstance(key, CacheEngineKey)
-
             keys_multi_layer = key.split_layers(self.num_layers)
 
             # NOTE: Only check the first layer
             if not self.storage_manager.contains(keys_multi_layer[0]):
-                if os.getenv("LMCACHE_DEBUG_SEGMENTS", "").lower() in ("1", "true", "on", "yes"):
+                if os.getenv("LMCACHE_DEBUG_SEGMENTS", "").lower() in (
+                    "1",
+                    "true",
+                    "on",
+                    "yes",
+                ):
                     try:
                         # best-effort decode for diagnostics only
                         if isinstance(tokens, list):
@@ -658,7 +658,12 @@ class LMCacheEngine:
                     )
                 break
 
-            if os.getenv("LMCACHE_DEBUG_SEGMENTS", "").lower() in ("1", "true", "on", "yes"):
+            if os.getenv("LMCACHE_DEBUG_SEGMENTS", "").lower() in (
+                "1",
+                "true",
+                "on",
+                "yes",
+            ):
                 try:
                     if isinstance(tokens, list):
                         tok_slice = tokens[start:end]
@@ -668,7 +673,7 @@ class LMCacheEngine:
                     if len(seg_text) > 160:
                         seg_text = seg_text[:157] + "..."
                     logger.info(
-                        "[hit ] [%d,%d) key=%s text=%r",
+                        "[hit]  [%d,%d) key=%s text=%r",
                         start,
                         end,
                         keys_multi_layer[0].to_string(),
@@ -676,7 +681,7 @@ class LMCacheEngine:
                     )
                 except Exception:
                     logger.info(
-                        "[hit ] [%d,%d) key=%s",
+                        "[hit]  [%d,%d) key=%s",
                         start,
                         end,
                         keys_multi_layer[0].to_string(),
@@ -727,7 +732,8 @@ class LMCacheEngine:
                 to_count_down.extend(mem_objs_layer)
 
             for mem_obj in to_count_down:
-                mem_obj.ref_count_down()
+                if mem_obj is not None:
+                    mem_obj.ref_count_down()
         else:
             # If no cache are found, we still need to yield to avoid
             # `StopIteration`
@@ -735,7 +741,6 @@ class LMCacheEngine:
                 yield None
 
         yield None
-
         # synchronize the last layer
         next(mem_obj_consumer)
 
@@ -926,7 +931,9 @@ class LMCacheEngine:
                 "UUID metadata mismatch with current engine (fmt/model/world_size/worker_id)"
             )
 
-        total_tokens = int(meta["total_tokens"]) if "total_tokens" in meta else sum(offsets)
+        total_tokens = (
+            int(meta["total_tokens"]) if "total_tokens" in meta else sum(offsets)
+        )
         request_configs: Optional[dict] = meta.get("request_configs")
 
         ret_mask = torch.zeros(total_tokens, dtype=torch.bool, device="cpu")
@@ -952,12 +959,18 @@ class LMCacheEngine:
             )
 
         # Group by location for batched retrieval
-        block_mapping: dict[str, list[tuple[CacheEngineKey, int, int]]] = defaultdict(list)
+        block_mapping: dict[str, list[tuple[CacheEngineKey, int, int]]] = defaultdict(
+            list
+        )
         last_failed_block_start: Optional[int] = None
         for key, start, end in zip(keys, starts, ends, strict=False):
             location = self.storage_manager.contains(key)
             if location is None:
-                last_failed_block_start = start if last_failed_block_start is None else max(last_failed_block_start, start)
+                last_failed_block_start = (
+                    start
+                    if last_failed_block_start is None
+                    else max(last_failed_block_start, start)
+                )
                 break
             ret_mask[start:end] = True
             block_mapping[location].append((key, start, end))
@@ -968,10 +981,15 @@ class LMCacheEngine:
         for location, blocks in block_mapping.items():
             loc_keys = [k for k, _, _ in blocks]
             mem_objs = self.storage_manager.batched_get(loc_keys, location=location)
-            assert mem_objs is not None, "Failed to get memory objects from storage backend"
+            assert mem_objs is not None, (
+                "Failed to get memory objects from storage backend"
+            )
             for (key, start, end), mem_obj in zip(blocks, mem_objs, strict=False):
                 if mem_obj is None:
-                    if last_failed_block_start is None or last_failed_block_start < start:
+                    if (
+                        last_failed_block_start is None
+                        or last_failed_block_start < start
+                    ):
                         last_failed_block_start = start
                     break
                 retrieved_chunks.append((key, mem_obj, start, end))
@@ -997,7 +1015,9 @@ class LMCacheEngine:
 
         if len(retrieved_chunks) > 0:
             _, mem_objs, st_list, ed_list = zip(*retrieved_chunks, strict=False)
-            self.gpu_connector.batched_to_gpu(list(mem_objs), list(st_list), list(ed_list), **kwargs)
+            self.gpu_connector.batched_to_gpu(
+                list(mem_objs), list(st_list), list(ed_list), **kwargs
+            )
 
         for _, mem_obj, _, _ in retrieved_chunks:
             mem_obj.ref_count_down()

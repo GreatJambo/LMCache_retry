@@ -549,6 +549,11 @@ class VLLMBufferLayerwiseGPUConnector(GPUConnectorInterface):
                     for start, end, memory_obj in zip(
                         starts, ends, memory_objs_layer, strict=False
                     ):
+                        if memory_obj is None:
+                            logger.warning(
+                                f"memory_obj is None for layer {layer_id}, start {start}, end {end}"
+                            )
+                            continue
                         assert memory_obj.metadata.fmt == MemoryFormat.KV_2TD
                         assert load_gpu_buffer_obj.tensor is not None
                         load_gpu_buffer_obj.tensor[0][

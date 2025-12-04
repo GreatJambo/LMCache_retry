@@ -98,10 +98,12 @@ class LMCLlamaModel(nn.Module):
                 dim=-1,
             )
 
+            print(f"************************************************************ compute_layer q: {q.shape}, k: {k.shape}, v: {v.shape}, residual: {residual.shape}, attn_metadata: {attn_metadata}")
             q, k, v, residual, attn_output, attn_metadata = self.blender.process_qkv(
                 q, k, v, residual, idx, attn_output, attn_metadata
             )
 
+            print(f"************************************************************ compute_layer after blender q: {q.shape}, k: {k.shape}, v: {v.shape}, residual: {residual.shape}, attn_output: {attn_output.shape}, attn_metadata: {attn_metadata}")
             num_heads = self.vllm_attn_layers[idx].num_heads
             num_kv_heads = self.vllm_attn_layers[idx].num_kv_heads
             head_size = self.vllm_attn_layers[idx].head_size

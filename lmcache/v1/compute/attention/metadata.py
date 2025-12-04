@@ -29,6 +29,7 @@ class LMCFlashAttnMetadata(LMCAttnMetadata):
     max_seq_len: torch.Tensor
 
     def update_from_top_indices(self, top_indices: torch.Tensor):
+        print(f"************************************************************ LMCFlashAttnMetadata update_from_top_indices top_indices: {top_indices}")
         top_k_num = len(top_indices)
         self.max_query_len = top_k_num
         device = self.query_start_loc.device
@@ -74,6 +75,7 @@ class LMCFlashInferSparseMetadata(LMCAttnMetadata):
         top_indices_slice //= self.sparse_blk_col_size
         mask = cols < top_indices_slice.unsqueeze(1)
         block_mask_map[mask] = 1
+
         self.wrapper.plan(
             block_mask_map.expand(self.num_kv_heads, -1, -1),
             block_row_sizes.expand(self.num_kv_heads, -1),
