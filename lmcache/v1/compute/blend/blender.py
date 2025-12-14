@@ -71,11 +71,21 @@ class LMCBlender:
     ):
         logger.debug(f"Blender is processing KV for layer {layer_id}")
         # Reset per-layer metadata only when layer changes to avoid
-        # losing indices within the same layer's multi-pass execution.
+        # losing indices within the same layer's multi-pass execution (e.g. multi-step attention?).
+        # HOWEVER, for chunked execution of the *same request* (L0 C1 -> L0 C2), we MUST reset imp_indices.
+
+        # We need a robust way to know if we are starting a NEW chunk for this layer.
+        # We can leverage the offset tracking we just added.
+        # If current_offset changes, it implies we moved forward.
+
+        # Let's rely on standard logic but FORCE RESET imp_indices if we are in chunked mode (mask > k)
+        # AND we are in the check_layers.
+
         if getattr(self, "_last_layer_id", None) != layer_id:
             self._last_layer_id = layer_id
             self.metadata.imp_indices = None
             self.metadata.positions = None
+
         old_k, old_v = self.gpu_connector.get_kv(layer_id)
 
         if attn_output is None:
@@ -94,51 +104,174 @@ class LMCBlender:
         attn_layer = layer.self_attn
         q, k = attn_layer.rotary_emb(self.metadata.positions, q, k)
 
+        # Apply token mask to align newly computed K/V with cached K/V (old_k/old_v)
+        # old_k/old_v typically only contains the "True" part of the mask
+        # This should only happen for the first layer (check layer) where blending happens.
+        # Subsequent layers receive sparse K/V inputs.
+        if (
+            self.metadata.token_mask is not None
+            and layer_id in self.common_metadata.check_layers
+        ):
+            mask = self.metadata.token_mask.to(k.device)
+            # print(f"DEBUG: process_qkv layer={layer_id} k.shape={k.shape} mask.shape={mask.shape} old_k.shape={old_k.shape}")
+
+            # Handle chunked execution (e.g., vLLM processes 48 tokens, but mask is 320)
+            num_tokens = k.shape[0]
+            if num_tokens < mask.shape[0]:
+                # We need to determine WHICH chunk of the mask/old_k corresponds to these tokens.
+                # Heuristic: We track the cumulative number of tokens processed for this blend session.
+                # Note: This assumes compute_layer is called sequentially for chunks of the same request.
+
+                # Initialize per-layer offset tracker if not present
+                if not hasattr(self.metadata, "_blend_layer_offsets"):
+                    # Should be init in blend(), but safe fallback
+                    self.metadata._blend_layer_offsets = {}
+
+                # The most robust way is to assume linear processing of the retrieved suffix.
+                current_offset = self.metadata._blend_layer_offsets.get(layer_id, 0)
+
+                # If offset exceeds mask size, something is wrong or we wrapped around?
+                # Assuming simple sequential processing for now.
+
+                end_offset = min(current_offset + num_tokens, mask.shape[0])
+                actual_tokens = end_offset - current_offset
+
+                # Slice mask and old_k
+                mask_chunk = mask[current_offset:end_offset]
+                old_k = old_k[current_offset:end_offset]
+                old_v = old_v[current_offset:end_offset]
+
+                # Update offset for next call to this layer
+                self.metadata._blend_layer_offsets[layer_id] = end_offset
+
+                # If we updated k above, use the slice.
+                # Wait, k is the input (48). We need to match it with mask_chunk (48).
+                # But if actual_tokens < num_tokens (e.g. last jagged chunk), slice k too?
+                if actual_tokens < num_tokens:
+                    # This implies input k has extra tokens not covered by our retrieval mask?
+                    # Or maybe we are blending only a part of the prompt.
+                    # For safety, let's slice k to match the mask chunk we have.
+                    k = k[:actual_tokens]
+                    v = v[:actual_tokens]
+                    q = q[:actual_tokens]
+                    residual = residual[:actual_tokens]
+
+                mask = mask_chunk
+
+                # CRITICAL FIX for Chunked Mode:
+                # If we are in Check Layer, we MUST re-select indices for THIS chunk.
+                # The previous logic (lines 160+) would skip selection if imp_indices was not None.
+                # But imp_indices serves two purposes:
+                # 1. Reuse selection from L0 -> L1 (Good)
+                # 2. Reuse selection from L0_Chunk1 -> L0_Chunk2 (BAD!)
+
+                # How to distinguish?
+                # If we are in Check Layer, we ALWAYS want to calculate fresh indices for the current input chunk.
+                # We should NOT reuse "imp_indices" from a previous chunk of the same layer.
+                # But we SHOULD reuse "imp_indices" if we are in L1 (from L0).
+
+                if layer_id in self.common_metadata.check_layers:
+                    self.metadata.imp_indices = None
+                    # We also need to reset positions because they are derived from imp_indices
+                    # Actually positions logic is below.
+                    # If we set imp_indices to None, it will enter the selection block.
+
+            k_subset = k[mask]
+            v_subset = v[mask]
+        else:
+            mask = None
+            k_subset = k
+            v_subset = v
+
         if (
             self.selected_indices is None
             and layer_id in self.common_metadata.check_layers
             and self.metadata.imp_indices is None
+            and self.metadata.token_mask is not None
         ):
-            diff_k = torch.sum(
-                (k.to(torch.float32) - old_k.to(torch.float32)) ** 2, dim=[1]
-            )
-            total_len = diff_k.shape[0]
+            # Calculate difference
+            # Slicing: Ensure we compare the overlapping part only.
+            # Usually input (k_subset) >= cache (old_k) in prefix caching.
+            min_len = min(k_subset.shape[0], old_k.shape[0])
 
+            k_diff_input = k_subset[:min_len].to(torch.float32)
+            old_k_input = old_k[:min_len].to(torch.float32)
+
+            diff_k = (k_diff_input - old_k_input) ** 2
+            diff_norm = diff_k.sum(dim=-1)
+
+            # Select top k
             assert self.common_metadata.recomp_ratios is not None
-
             # TODO(Jiayi): remove `[0]` hardcode
-            topk_num = int(total_len * self.common_metadata.recomp_ratios[0])
+            # Calculate topk based on the current chunk size
+            num_candidates = diff_norm.shape[0]
+            topk_num = int(num_candidates * self.common_metadata.recomp_ratios[0])
+            # Ensure at least some tokens are picked if ratio > 0, or handle 0
+            if (
+                topk_num == 0
+                and self.common_metadata.recomp_ratios[0] > 0
+                and num_candidates > 0
+            ):
+                topk_num = 1
 
-            top_indices = torch.topk(diff_k, k=topk_num).indices
-            top_indices, _ = torch.sort(top_indices)
+            # print(f"DEBUG: process_qkv layer={layer_id} num_candidates={num_candidates} topk_num={topk_num}")
 
-            k, v = k[top_indices], v[top_indices]
-            q = q[top_indices]
-            residual = residual[top_indices]
+            if num_candidates == 0:
+                top_indices = torch.empty(0, dtype=torch.int64, device=diff_norm.device)
+            elif topk_num >= num_candidates:
+                # Take all
+                top_indices = torch.arange(num_candidates, device=diff_norm.device)
+            else:
+                top_indices = torch.topk(
+                    diff_norm, k=topk_num, dim=0, largest=False
+                ).indices
+
+            # Map valid subset indices back to full tensor indices if mask exists
+            if mask is not None:
+                mask_indices = torch.nonzero(mask, as_tuple=True)[0]
+                real_indices = mask_indices[top_indices]
+            else:
+                real_indices = top_indices
+
+            # Update cache with new values (using subset mapping)
+            old_k[top_indices] = k_subset[top_indices]
+            old_v[top_indices] = v_subset[top_indices]
+
+            # Filter Q and Residual for sparse execution
+            q = q[real_indices]
+            residual = residual[real_indices]
 
             logger.debug(f"Number of indices picked: {len(top_indices)}")
-            logger.debug(
-                f"************************************************************ doing blending"
-            )
-            print(
-                f"************************************************************ doing blending"
-            )
 
+            # Store selection for this blend step
+            # imp_indices are relative to the cached buffer (old_k) size
             self.metadata.imp_indices = top_indices
-            self.metadata.positions = self.metadata.positions[top_indices]
+            self.metadata.positions = self.metadata.positions[real_indices]
             attn_output = attn_output[:topk_num]
 
             attn_metadata.update_from_top_indices(top_indices)
             # Persist selection for later layers within the same blend
             self.selected_indices = top_indices
+
+            # If mask was used, we also persist the real indices mapping if needed?
+            # Actually selected_indices (top_indices) is sufficient for old_k updates in later layers.
+            # But q/residual in later layers are already sparse, so we don't need real_indices again
+            # (they flow through the network).
+
         else:
             # Use existing selection to guide later layers without re-selecting
             if self.selected_indices is not None:
                 self.metadata.imp_indices = self.selected_indices
 
         if self.metadata.imp_indices is not None:
-            old_k[self.metadata.imp_indices] = k
-            old_v[self.metadata.imp_indices] = v
+            # For subsequent layers, k is passed as sparse (size = topk_num).
+            # We need to update the dense cache (old_k) with these sparse values.
+            # In the first layer, k is dense, and we've already updated the cache
+            # inside the selection block above, so we skip here.
+            if k.shape[0] == self.metadata.imp_indices.shape[0]:
+                old_k[self.metadata.imp_indices] = k
+                old_v[self.metadata.imp_indices] = v
+
             return q, old_k, old_v, residual, attn_output, attn_metadata
         else:
             return q, k, v, residual, attn_output, attn_metadata
@@ -325,9 +458,17 @@ class LMCBlender:
         if isinstance(tokens, list):
             tokens = torch.tensor(tokens).cuda()
 
+        if mask is not None:
+            mask = mask.to(tokens.device)
+
         # Reset per-blend-call state
         self.selected_indices = None
         self._last_layer_id = None
+
+        # Reset and track slice offsets in metadata for robustness across compute_layer calls
+        self.metadata.token_mask = mask  # Store mask for process_qkv
+        if mask is not None:
+            self.metadata._blend_layer_offsets = {}  # New tracking dictionary
 
         layerwise_blender = self.blend_layer(tokens, mask, **kwargs)
 

@@ -212,6 +212,15 @@ class LocalDiskBackend(StorageBackendInterface):
             else:
                 return False
 
+    @staticmethod
+    def _safe_remove(path: str) -> None:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logger.warning(f"Failed to remove file {path}: {e}")
+
     def remove(
         self,
         key: CacheEngineKey,
@@ -230,18 +239,11 @@ class LocalDiskBackend(StorageBackendInterface):
         self.usage -= size
         self.stats_monitor.update_local_storage_usage(self.usage)
 
-        # NOTE: The following code will cause deadlock
-        # res = asyncio.run_coroutine_threadsafe(
-        #     self.disk_worker.submit_task("delete", os.remove, path),
-        #     self.loop,
-        # )
-        # res.result()
-
-        try:
-            os.remove(path)
-        except FileNotFoundError:
-            # File already deleted - eviction goal achieved
-            pass
+        # Fire and forget asynchronous deletion
+        asyncio.run_coroutine_threadsafe(
+            self.disk_worker.submit_task("delete", self._safe_remove, path),
+            self.loop,
+        )
 
         if force:
             self.cache_policy.update_on_force_evict(key)
