@@ -9,6 +9,8 @@ import time
 from urllib.parse import urlparse
 
 # Third Party
+from safetensors import safe_open
+from safetensors.torch import save_file
 import torch
 
 # First Party
@@ -473,7 +475,12 @@ class LocalDiskBackend(StorageBackendInterface):
         self.stats_monitor.update_local_storage_usage(self.usage)
 
         # TODO(Jiayi): need to add ref count in disk memory object
-        self.write_file(buffer, path)
+        # TODO(Jiayi): need to add ref count in disk memory object
+        # self.write_file(buffer, path)
+        data_dict = {"kv_chunk": kv_chunk.contiguous()}
+        if hasattr(memory_obj.metadata, "old_positions"):
+            data_dict["old_positions"] = memory_obj.metadata.old_positions
+        save_file(data_dict, path)
 
         # ref count down here because there's a ref_count_up in
         # `submit_put_task` above.
@@ -503,8 +510,14 @@ class LocalDiskBackend(StorageBackendInterface):
         logger.debug("Executing `async_load_bytes` from disk.")
         # TODO (Jiayi): handle the case where loading fails.
         for path, key, mem_obj in zip(paths, keys, memory_objs, strict=False):
-            buffer = mem_obj.byte_array
-            self.read_file(key, buffer, path)
+            # buffer = mem_obj.byte_array
+            # self.read_file(key, buffer, path)
+
+            with safe_open(path, framework="pt", device=self.dst_device) as f:  # type: ignore
+                kv_chunk = f.get_tensor("kv_chunk")
+                mem_obj.tensor.copy_(kv_chunk, non_blocking=True)
+                if "old_positions" in f.keys():
+                    mem_obj.metadata.old_positions = f.get_tensor("old_positions")
 
             self.disk_lock.acquire()
             self.dict[key].unpin()
@@ -527,8 +540,13 @@ class LocalDiskBackend(StorageBackendInterface):
         memory_obj = self.local_cpu_backend.allocate(shape, dtype, fmt)
         assert memory_obj is not None, "Memory allocation failed during disk load."
 
-        buffer = memory_obj.byte_array
-        self.read_file(key, buffer, path)
+        # buffer = memory_obj.byte_array
+        # self.read_file(key, buffer, path)
+        with safe_open(path, framework="pt", device=self.dst_device) as f:  # type: ignore
+            kv_chunk = f.get_tensor("kv_chunk")
+            memory_obj.tensor.copy_(kv_chunk, non_blocking=True)
+            if "old_positions" in f.keys():
+                memory_obj.metadata.old_positions = f.get_tensor("old_positions")
         return memory_obj
 
     def write_file(self, buffer, path):

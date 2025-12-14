@@ -621,7 +621,8 @@ class LMCacheEngine:
             keys_multi_layer = key.split_layers(self.num_layers)
 
             # NOTE: Only check the first layer
-            if not self.storage_manager.contains(keys_multi_layer[0]):
+            backend_loc = self.storage_manager.contains(keys_multi_layer[0])
+            if not backend_loc:
                 if os.getenv("LMCACHE_DEBUG_SEGMENTS", "").lower() in (
                     "1",
                     "true",
@@ -701,7 +702,12 @@ class LMCacheEngine:
             # Transpose the keys into layer major format
             keys_layer_major = [list(row) for row in zip(*keys, strict=False)]
 
-            get_generator = self.storage_manager.layerwise_batched_get(keys_layer_major)
+            # FIXME (Jiayi): The location shouldn't be hardcoded to the last found location.
+            # But for now, we assume all chunks are in the same backend.
+            get_generator = self.storage_manager.layerwise_batched_get(
+                keys_layer_major,
+                location=backend_loc,
+            )
 
             assert isinstance(
                 self.gpu_connector,

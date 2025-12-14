@@ -438,7 +438,9 @@ class LMCBlender:
         # Write stats to file for easy access
         import os
 
-        stats_file = os.path.join("/tmp", "lmcache_blending_stats.txt")
+        stats_file = os.environ.get(
+            "LMCACHE_STATS_FILE", os.path.join("/tmp", "lmcache_blending_stats.txt")
+        )
         with open(stats_file, "a") as f:
             f.write(f"requested={num_required_tokens},retrieved={retrieved_tokens}\n")
 
