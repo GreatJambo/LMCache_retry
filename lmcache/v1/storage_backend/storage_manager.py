@@ -434,6 +434,27 @@ class StorageManager:
             else:
                 # Fallback to blocking retrieval when async serializer is not set
                 memory_objs = backend.batched_get_blocking(keys_multi_chunk)
+
+                # Read-Through Caching: If not from CPU, try to promote to CPU
+                if location != "LocalCPUBackend":
+                    # We need to make sure we have access to LocalCPUBackend
+                    # It might not be "enabled" in strict sense but might be available in storage_backends?
+                    # StorageManager constructor says: "if config.local_cpu: self.local_cpu_backend = ..."
+                    # So we check if self.local_cpu_backend exists.
+                    if hasattr(self, "local_cpu_backend") and self.local_cpu_backend:
+                        # We need to submit put tasks for each retrieved object
+                        # self.local_cpu_backend.batched_submit_put_task(keys_multi_chunk, memory_objs)
+                        # NOTE: batched_submit_put_task checks `if not self.use_hot: return`
+                        # So it's safe to call even if hot cache is disabled (though logically we wouldn't be here)
+
+                        # However, memory_objs might contain None if some chunks were missing (though contain() said yes?)
+                        # backend.batched_get_blocking returns Optional[List[Optional[MemoryObj]]] or List[MemoryObj]
+                        # Let's assume list of MemoryObj for now as contains() passed.
+                        if memory_objs:
+                            self.local_cpu_backend.batched_submit_put_task(
+                                keys_multi_chunk, memory_objs
+                            )
+
                 fut: Future = Future()
                 fut.set_result(memory_objs)
                 yield fut

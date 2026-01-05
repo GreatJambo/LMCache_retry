@@ -299,6 +299,10 @@ class LocalCPUBackend(AllocatorBackendInterface):
             )
             return paged_mem_allocator
         else:
+            print(
+                "debug: MixedMemoryAllocator ---------------",
+                int(cpu_size * 1024**3),
+            )
             return MixedMemoryAllocator(
                 int(cpu_size * 1024**3),
                 numa_mapping=numa_mapping,

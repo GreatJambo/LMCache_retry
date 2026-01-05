@@ -175,6 +175,50 @@ class LocalDiskBackend(StorageBackendInterface):
     def contains(self, key: CacheEngineKey, pin: bool = False) -> bool:
         with self.disk_lock:
             if key not in self.dict:
+                # Lazy loading: check if file exists on disk
+                path = self._key_to_path(key)
+                if os.path.exists(path):
+                    try:
+                        # Load metadata from safetensors header without loading tensor data
+                        with safe_open(path, framework="pt", device="cpu") as f:
+                            kv_chunk = f.get_slice("kv_chunk")
+                            shape = kv_chunk.get_shape()
+                            # Mapping string dtype from safetensors to torch dtype
+                            # SafeTensors stores dtype as string (e.g. "F16", "BF16")
+                            # We need a robust mapping here or rely on dummy type if unused for allocation size?
+                            # Actually we use dtype for allocation.
+                            # SafeTensors doesn't expose torch.dtype directly.
+                            # But we can infer size from file size or just use what we have?
+                            # Wait, f.get_slice("kv_chunk").get_dtype() returns string representation.
+                            st_dtype = kv_chunk.get_dtype()
+                            # Simple mapping (add more as needed)
+                            dtype_map = {
+                                "F16": torch.float16,
+                                "BF16": torch.bfloat16,
+                                "F32": torch.float32,
+                            }
+                            dtype = dtype_map.get(
+                                st_dtype, torch.bfloat16
+                            )  # Default to bfloat16 if unknown
+
+                            # Get file size for cache accounting
+                            size = os.path.getsize(path)
+
+                            # MemoryFormat is usually contiguous for saved files
+                            # Infer MemoryFormat from shape to satisfy vLLM connector expectations
+                            if len(shape) == 3 and shape[0] == 2:
+                                fmt = MemoryFormat.KV_2TD
+                            else:
+                                fmt = MemoryFormat.KV_2LTD
+
+                            self.dict[key] = DiskCacheMetadata(
+                                path, size, torch.Size(shape), dtype, fmt, False
+                            )
+                            return True
+                    except Exception as e:
+                        logger.warning(f"Failed to lazy load info for {path}: {e}")
+                        return False
+
                 return False
             if pin:
                 self.dict[key].pin()

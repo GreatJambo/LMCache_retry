@@ -55,7 +55,7 @@ class LMCLlamaModel(nn.Module):
             dtype=dtype,
         )
 
-    # @torch.compile
+    @torch.compile
     def compute_layer(
         self,
         input_ids: torch.Tensor,

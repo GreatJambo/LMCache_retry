@@ -340,7 +340,18 @@ class LMCLocalDiskBackend(LMCBackendInterface):
             True if the cache engine contains the key, False otherwise
         """
         with self.update_lock:
-            return key in self.dict
+            if key in self.dict:
+                return True
+
+        # Fallback: check disk existence for persistence
+        path = self._key_to_path(key)
+        exists = os.path.exists(path)
+        if exists:
+            print(f"[LMCache-DEBUG] Found key on disk: {path}")
+            return True
+        else:
+            # print(f"[LMCache-DEBUG] Key not found on disk: {path}") # Commented out to reduce noise, un-comment if needed
+            return False
 
     def _key_to_path(
         self,
@@ -368,10 +379,14 @@ class LMCLocalDiskBackend(LMCBackendInterface):
             key: the key of the token chunk, including prefix hash and format
 
         """
+        if key in self.dict:
+            metadata = self.dict.pop(key)
+            path = metadata.path
+        else:
+            path = self._key_to_path(key)
 
-        path = self.dict[key].path
-        self.dict.pop(key)
-        os.remove(path)
+        if os.path.exists(path):
+            os.remove(path)
 
     @_lmcache_nvtx_annotate
     def put_worker(
@@ -414,6 +429,12 @@ class LMCLocalDiskBackend(LMCBackendInterface):
     ) -> None:
         path = self._key_to_path(key)
         logger.debug(f"Saving cache to {path}")
+
+        # DEBUG: Check if we are overwriting
+        if os.path.exists(path):
+            print(f"[LMCache-DEBUG] Overwriting existing file: {path}")
+        else:
+            print(f"[LMCache-DEBUG] Writing NEW file: {path}")
 
         self.update_lock.acquire()
 
@@ -479,6 +500,12 @@ class LMCLocalDiskBackend(LMCBackendInterface):
         path = self._key_to_path(key)
         logger.debug(f"Saving cache to {path}")
 
+        # DEBUG: Check if we are overwriting
+        if os.path.exists(path):
+            print(f"[LMCache-DEBUG] Overwriting existing file: {path}")
+        else:
+            print(f"[LMCache-DEBUG] Writing NEW file: {path}")
+
         self.update_lock.acquire()
         # Obtain keys to evict
         evict_keys, put_status = self.evictor.update_on_put(
@@ -543,9 +570,34 @@ class LMCLocalDiskBackend(LMCBackendInterface):
             None if the key is not found
         """
         self.update_lock.acquire()
+
+        # Check if in memory dict
         if key not in self.dict:
-            self.update_lock.release()
-            return None
+            # Lazy load from disk
+            path = self._key_to_path(key)
+            if not os.path.exists(path):
+                self.update_lock.release()
+                return None
+
+            # If exists on disk, populate metadata and continue
+            try:
+                size = os.path.getsize(path)
+                # Check eviction before adding to dict
+                evict_keys, put_status = self.evictor.update_on_put(self.dict, size)
+                if put_status == PutStatus.ILLEGAL:
+                    # Cache full and item too big?
+                    # For now just warn and fail retrieval or evict?
+                    # Standard behavior usually evicts others.
+                    pass
+
+                for evict_key in evict_keys:
+                    self.remove(evict_key)
+
+                self.dict[key] = DiskCacheMetadata(path, size)
+                logger.info(f"Lazy loaded cache key from disk: {path}")
+            except OSError:
+                self.update_lock.release()
+                return None
 
         if key in self.future_pool:
             future = self.future_pool[key][0]

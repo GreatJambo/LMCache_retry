@@ -140,7 +140,7 @@ class TokenDatabase(metaclass=abc.ABCMeta):
         # Ignore extra keys for now
         # Extra keys are for multi-modal inputs and
         # request specific metadata (e.g., LoRA ID).
-        print(f"prefix_hash: ******************************* {prefix_hash}")
+        # print(f"prefix_hash: ******************************* {prefix_hash}")
         return self.hash_func((prefix_hash, tokens_tuple, extra_keys))
 
 
@@ -313,7 +313,7 @@ class SegmentTokenDatabase(TokenDatabase):
         # to use `1:` (whether there's a special starting token
         # in the beginning)
         self.sep_tokens = self.tokenizer.encode(config.blend_special_str)[1:]
-        print(f"sep_tokens: ******************************* {self.sep_tokens}")
+        # print(f"sep_tokens: ******************************* {self.sep_tokens}")
         self.sep_tokens = torch.tensor(self.sep_tokens, device="cpu")
         self.sep_len = len(self.sep_tokens)
 
@@ -404,7 +404,12 @@ class SegmentTokenDatabase(TokenDatabase):
 
                     # Optional segment-level debug to help diagnose mismatches
                     # Enable via: LMCACHE_DEBUG_SEGMENTS=1
-                    if os.getenv("LMCACHE_DEBUG_SEGMENTS", "").lower() in ("1", "true", "on", "yes"):
+                    if os.getenv("LMCACHE_DEBUG_SEGMENTS", "").lower() in (
+                        "1",
+                        "true",
+                        "on",
+                        "yes",
+                    ):
                         try:
                             seg_text = self.tokenizer.decode(token_chunk.tolist())
                             if len(seg_text) > 160:
