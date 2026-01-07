@@ -13,6 +13,9 @@ logger = init_logger(__name__)
 
 def infer_model_from_vllm(vllm_model, blender, enable_sparse: bool = False):
     model_name = type(vllm_model).__name__
+    if model_name == "CUDAGraphWrapper":
+        return infer_model_from_vllm(vllm_model.model, blender, enable_sparse)
+
     if model_name == "LlamaForCausalLM":
         # First Party
         from lmcache.v1.compute.models.llama import LMCLlamaModel

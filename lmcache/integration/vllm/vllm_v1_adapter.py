@@ -625,12 +625,7 @@ class LMCacheConnectorV1Impl:
             self.enable_blending = config.enable_blending
 
             if self.enable_blending:
-                self.blender = LMCBlenderBuilder.get_or_create(
-                    ENGINE_NAME,
-                    self.lmcache_engine,
-                    self.lmcache_engine.gpu_connector,
-                    config,
-                )
+                self.blender = None
 
             # Create lookup server using factory
             assert self.lmcache_engine is not None
@@ -852,6 +847,14 @@ class LMCacheConnectorV1Impl:
                     sync = False
                 # NOTE(Jiayi): Perform blending before layerwise prefix caching
                 if self.enable_blending:
+                    if self.blender is None:
+                        self.blender = LMCBlenderBuilder.get_or_create(
+                            ENGINE_NAME,
+                            self.lmcache_engine,
+                            self.lmcache_engine.gpu_connector,
+                            self.config,
+                        )
+
                     # TODO(Jiayi): Need to make prefix caching and blending compatible
                     self.blender.blend(
                         tokens[:lmcache_cached_tokens],

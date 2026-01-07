@@ -111,6 +111,20 @@ class LMCBlender:
 
             attn_metadata.update_from_top_indices(top_indices)
 
+            # Log the recomputed content
+            if hasattr(self, "current_tokens") and self.current_tokens is not None:
+                recomputed_tokens = self.current_tokens[top_indices]
+                logger.info(
+                    f"Layer {layer_id} recomputing {len(top_indices)} tokens: "
+                    f"Indices: {top_indices.tolist()}, "
+                    f"Token IDs: {recomputed_tokens.tolist()}"
+                )
+            else:
+                logger.info(
+                    f"Layer {layer_id} recomputing {len(top_indices)} tokens: "
+                    f"Indices: {top_indices.tolist()}"
+                )
+
         if self.metadata.imp_indices is not None:
             old_k[self.metadata.imp_indices] = k
             old_v[self.metadata.imp_indices] = v
@@ -132,6 +146,7 @@ class LMCBlender:
 
         # TODO(Jiayi): store is currently not included in this function
 
+        self.current_tokens = tokens
         layerwise_model_executor = self.layerwise_model.compute_layer(tokens)
         layerwise_retriever = self.cache_engine.retrieve_layer(tokens, mask, **kwargs)
 

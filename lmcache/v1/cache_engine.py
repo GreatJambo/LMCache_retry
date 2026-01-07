@@ -415,7 +415,8 @@ class LMCacheEngine:
 
         self.stats_monitor.on_store_finished(monitor_req_id, tot_token_num)
         logger.debug(f"Stored {tot_token_num} out of total {len(tokens)} tokens")
-        yield
+        while True:
+            yield
 
     @_lmcache_nvtx_annotate
     @torch.inference_mode()
