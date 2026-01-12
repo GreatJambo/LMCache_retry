@@ -625,6 +625,72 @@ class LMCacheConnectorV1Impl:
             self.enable_blending = config.enable_blending
 
             if self.enable_blending:
+                # --- LMCache Codebase Defense: Sanity Check for Separator ---
+                try:
+                    from transformers import AutoTokenizer
+
+                    model_name = vllm_config.model_config.model
+                    logger.info(
+                        f"LMCache: Running Blending Sanity Check on model {model_name} for separator '{config.blend_special_str}'"
+                    )
+
+                    # Load tokenizer (fast tokenizer preferred)
+                    tokenizer = AutoTokenizer.from_pretrained(
+                        model_name, trust_remote_code=True
+                    )
+
+                    # Tokenize the configured string (Checking RAW tokens)
+                    tokenized_sep = tokenizer.encode(
+                        config.blend_special_str, add_special_tokens=False
+                    )
+
+                    # 1. Check for BOS token (User specific criteria: "If results contain [2]")
+                    # Llama 2/Mistral BOS=1, Llama 3 BOS=128000.
+                    # Some tokenizers might insert it if they think it's start of string even with add_special_tokens=False?
+                    # Or maybe the user meant "If we tokenized normally and got a BOS prepended to a '#' due to stripping"
+
+                    suspicious = False
+                    if (
+                        tokenizer.bos_token_id is not None
+                        and tokenizer.bos_token_id in tokenized_sep
+                    ):
+                        suspicious = True
+
+                    # Refinement: Empirical testing shows Llama 3 (or configured tokenizer) can produce [2, 674] for stripped "# #".
+                    # Even though Llama 3 BOS is 128000, ID 2 appears in this specific Bad Case.
+                    # We explicitly check for 2 as requested by user ("If result contains [2]").
+                    if 2 in tokenized_sep:
+                        suspicious = True
+
+                    # 2. Check for Start-of-Sentence behavior consistency
+                    # If config is clean " # #", it should tokenize to [SpaceHash, SpaceHash] typically.
+                    # If config is stripped "# #", it might tokenize to [Hash, Hash] or [BOS, Hash, Hash].
+
+                    if suspicious:
+                        error_msg = (
+                            f"LMCache Sanity Check FAILED: blend_special_str '{config.blend_special_str}' "
+                            f"tokenizes to {tokenized_sep}, containing BOS token {tokenizer.bos_token_id}. "
+                            "This indicates leading whitespace was likely stripped by the config parser. "
+                            "Please ensure the environment variable is double-quoted, e.g., export LMCACHE_BLEND_SPECIAL_STR=\"' # #'\""
+                        )
+                        logger.error(error_msg)
+                        raise ValueError(error_msg)
+
+                    logger.info(
+                        f"LMCache: Blending Sanity Check PASSED. Separator tokens: {tokenized_sep}"
+                    )
+
+                except ImportError:
+                    logger.warning(
+                        "LMCache: transformers not installed, skipping sanity check."
+                    )
+                except ValueError as ve:
+                    raise ve  # Re-raise actual validation errors
+                except Exception as e:
+                    logger.warning(
+                        f"LMCache: Codebase Defense skipped due to error: {e}"
+                    )
+
                 self.blender = None
 
             # Create lookup server using factory
