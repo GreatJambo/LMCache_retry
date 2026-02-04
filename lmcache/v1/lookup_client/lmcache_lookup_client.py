@@ -204,8 +204,12 @@ class LMCacheLookupClient(LookupClientInterface):
                 request_configs_buf,
             ]
         else:
-            # print(len(token_ids))
-            tokens_buf = self.encoder.encode(token_ids)
+            # Convert to list to handle vLLM's ConstantList type
+            if hasattr(token_ids, "tolist"):
+                token_ids_list = token_ids.tolist()
+            else:
+                token_ids_list = list(token_ids)
+            tokens_buf = self.encoder.encode(token_ids_list)
             msg_buf = [
                 tokens_buf,
                 lookup_id_buf,

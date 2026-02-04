@@ -516,18 +516,9 @@ class LMCacheConnectorV1Impl:
         else:
             self.use_layerwise = config.use_layerwise
             self.enable_blending = config.enable_blending
-
-            if self.enable_blending:
-                assert self.lmcache_engine is not None
-                assert self.lmcache_engine.gpu_connector is not None, (
-                    "GPU connector must be available for blending"
-                )
-                self.blender = LMCBlenderBuilder.get_or_create(
-                    ENGINE_NAME,
-                    self.lmcache_engine,
-                    self.lmcache_engine.gpu_connector,
-                    config,
-                )
+            # Lazy blender initialization - will be created on first use
+            self.blender = None
+            self._blender_initialized = False
 
         # Legacy compatibility check
         self._check_legacy_register_kv_caches()
@@ -733,6 +724,45 @@ class LMCacheConnectorV1Impl:
         self._build_kv_layer_groups()
         self._manager.post_init()
 
+    def _lazy_init_blender(self, forward_context: "ForwardContext") -> None:
+        """Lazily initialize blender when model is available from forward_context."""
+        if self._blender_initialized or not self.enable_blending:
+            return
+
+        # Try to get model from forward_context and register it
+        try:
+            # Import here to avoid circular dependencies
+            from lmcache.v1.compute.models.utils import VLLMModelTracker
+
+            # Get model from no_compile_layers (attention layers contain model reference)
+            if forward_context.no_compile_layers:
+                for layer_name, attn_layer in forward_context.no_compile_layers.items():
+                    # Try to find the parent model
+                    if hasattr(attn_layer, "model"):
+                        vllm_model = attn_layer.model
+                        VLLMModelTracker.register_model(ENGINE_NAME, vllm_model)
+                        break
+
+            # Now create the blender
+            assert self.lmcache_engine is not None
+            assert self.lmcache_engine.gpu_connector is not None, (
+                "GPU connector must be available for blending"
+            )
+            self.blender = LMCBlenderBuilder.get_or_create(
+                ENGINE_NAME,
+                self.lmcache_engine,
+                self.lmcache_engine.gpu_connector,
+                self.config,
+            )
+            self._blender_initialized = True
+            logger.info("Blender initialized lazily")
+        except Exception as e:
+            logger.warning(
+                f"Failed to initialize blender: {e}. Blending will be disabled."
+            )
+            self.enable_blending = False
+            self._blender_initialized = True
+
     @_lmcache_nvtx_annotate
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         """Start loading the KV cache from the connector buffer to vLLM's
@@ -747,6 +777,9 @@ class LMCacheConnectorV1Impl:
             the same.
         """
         self.current_layer = 0
+
+        # Lazy initialize blender if needed
+        self._lazy_init_blender(forward_context)
 
         if len(self.kv_caches) == 0:
             logger.warning(
